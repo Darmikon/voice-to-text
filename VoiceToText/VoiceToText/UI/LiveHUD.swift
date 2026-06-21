@@ -25,8 +25,8 @@ enum LiveHUDMode {
     case failed
 }
 
-/// Sub-phase shown inside the review form when the user re-records ("dozapis")
-/// without leaving the form. `.none` is the normal editable review.
+/// Sub-phase shown inside the review form when the user re-records without
+/// leaving the form. `.none` is the normal editable review.
 enum ReviewTakePhase {
     case none
     case recording
@@ -757,8 +757,12 @@ private struct ReviewTakeStrip: View {
     }
 
     private var hint: String {
-        let keys = HotkeyStore.shared.binding.displayKeys.joined()
-        return "Press \(keys) to finish · Esc cancels"
+        switch HotkeyStore.shared.mode {
+        case .hold:
+            return "Release to finish · Esc cancels"
+        case .toggle:
+            return "Press \(HotkeyStore.shared.binding.displayKeys.joined()) again to finish · Esc cancels"
+        }
     }
 }
 
