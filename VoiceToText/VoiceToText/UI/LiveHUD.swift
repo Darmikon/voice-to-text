@@ -25,6 +25,14 @@ enum LiveHUDMode {
     case failed
 }
 
+/// Sub-phase shown inside the review form when the user re-records ("dozapis")
+/// without leaving the form. `.none` is the normal editable review.
+enum ReviewTakePhase {
+    case none
+    case recording
+    case transcribing
+}
+
 @Observable
 @MainActor
 final class LiveHUDState {
@@ -32,6 +40,7 @@ final class LiveHUDState {
     static let levelHistoryCount = 140
 
     var mode: LiveHUDMode = .recording
+    var reviewTakePhase: ReviewTakePhase = .none
     var isRecording: Bool = false
     var elapsedSeconds: Double = 0
     /// Smoothed mic level, 0...1.
@@ -152,6 +161,7 @@ final class LiveHUDPanel {
         state.reviewActions = []
         state.runningActionId = nil
         state.actionRevertStack = []
+        state.reviewTakePhase = .none
         state.onPaste = nil
         state.onCancel = nil
         state.onResume = nil
@@ -213,6 +223,7 @@ final class LiveHUDPanel {
         state.reviewShowsActions = ActionsStore.shared.showsInReview
         state.runningActionId = nil
         state.actionRevertStack = []
+        state.reviewTakePhase = .none
         state.onPaste = onPaste
         state.onCancel = onCancel
         state.onResume = onResume
@@ -255,6 +266,7 @@ final class LiveHUDPanel {
         state.reviewActions = []
         state.runningActionId = nil
         state.actionRevertStack = []
+        state.reviewTakePhase = .none
         state.onCancel = onCancel
         state.onRetry = onRetry
         state.onPaste = nil
@@ -310,6 +322,7 @@ final class LiveHUDPanel {
         state.reviewActions = []
         state.runningActionId = nil
         state.actionRevertStack = []
+        state.reviewTakePhase = .none
         state.onPaste = nil
         state.onCancel = nil
         state.onResume = nil
@@ -645,17 +658,20 @@ private struct ReviewView: View {
             ReviewTextEditor(text: $state.reviewText, state: state)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
+            if state.reviewTakePhase != .none {
+                ReviewTakeStrip(state: state)
+            }
+
             if state.reviewShowsActions {
                 ReviewActionsBar(state: state)
             }
 
             HStack(spacing: 8) {
                 ReviewKeyButton(
-                    title: "Resume",
-                    systemImage: "mic.fill",
-                    hint: "⌘R",
+                    title: "Cancel",
+                    hint: "esc",
                     emphasis: .secondary
-                ) { state.onResume?() }
+                ) { state.onCancel?() }
 
                 if !state.actionRevertStack.isEmpty, state.runningActionId == nil {
                     ReviewKeyButton(
@@ -670,18 +686,79 @@ private struct ReviewView: View {
                 Spacer()
 
                 ReviewKeyButton(
-                    title: "Cancel",
-                    hint: "esc",
+                    title: "Resume",
+                    systemImage: "mic.fill",
+                    hint: HotkeyStore.shared.binding.displayKeys.joined(),
                     emphasis: .secondary
-                ) { state.onCancel?() }
+                ) { state.onResume?() }
 
                 ReviewKeyButton(
                     title: "Paste",
-                    hint: HotkeyStore.shared.binding.displayKeys.joined(),
+                    hint: Self.pasteHint,
                     emphasis: .primary
                 ) { state.onPaste?() }
             }
         }
+    }
+
+    /// "↩" when Return sends; the configured send shortcut when Return is
+    /// remapped to newline.
+    static var pasteHint: String {
+        let store = HotkeyStore.shared
+        return store.sendOnReturn ? "↩" : store.sendShortcut.displayKeys.joined()
+    }
+}
+
+/// Compact in-form indicator shown while re-recording from the review form:
+/// a short waveform (reusing the recorded level history) plus a timer/hint
+/// while recording, and a shimmer while the new take transcribes. Sits between
+/// the editor and the buttons so the prior text stays visible.
+private struct ReviewTakeStrip: View {
+    @Bindable var state: LiveHUDState
+
+    var body: some View {
+        Group {
+            switch state.reviewTakePhase {
+            case .recording:
+                HStack(spacing: 12) {
+                    LevelBars(samples: state.levelHistory)
+                        .frame(height: 28)
+                    Text(timeString)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .monospacedDigit()
+                    Text(hint)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.42))
+                        .lineLimit(1)
+                }
+            case .transcribing:
+                HStack(spacing: 9) {
+                    ShimmerText("Transcribing")
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer(minLength: 0)
+                }
+                .frame(height: 28)
+            case .none:
+                EmptyView()
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+        )
+    }
+
+    private var timeString: String {
+        let total = Int(state.elapsedSeconds)
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private var hint: String {
+        let keys = HotkeyStore.shared.binding.displayKeys.joined()
+        return "Press \(keys) to finish · Esc cancels"
     }
 }
 

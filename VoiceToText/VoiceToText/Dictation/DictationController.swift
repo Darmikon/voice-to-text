@@ -274,6 +274,8 @@ final class DictationController {
             cancelRecording()
         case .cancelPendingRecording:
             cancelPendingRecording()
+        case .resumeRecording:
+            resumeRecording()
         case .none:
             break
         }
