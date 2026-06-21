@@ -73,6 +73,11 @@ final class DictationController {
     private var recordingStartGate = RecordingStartGate()
     private var standaloneModifierEventCoordinator = StandaloneModifierEventCoordinator()
     private var resumeContext: ResumeContext?
+    /// Set when the user presses Paste during an in-form re-record take: the
+    /// stopped take is transcribed and appended as usual, but instead of
+    /// returning to the review form the combined text is delivered immediately.
+    /// Cleared whenever a take resolves (deliver or back to review).
+    private var deliverAfterTake = false
     /// Audio kept around after a recoverable transcription failure so the
     /// user's Retry button can re-run the pipeline on the same samples
     /// (e.g. after a network blip). Backs both the failure HUD's Retry and
@@ -638,6 +643,10 @@ final class DictationController {
                 LiveHUDState.shared.reviewTakePhase = .recording
             } else {
                 LiveHUDPanel.shared.show(showsLiveText: streamingEngine != nil)
+                let hud = LiveHUDState.shared
+                hud.willReviewAfterRecording = reviewBeforePaste
+                hud.onStopTake = { [weak self] in Task { await self?.stopAndTranscribe() } }
+                hud.onCancelTake = { [weak self] in self?.cancelRecording() }
             }
             guard installRecordingEscMonitors() else {
                 _ = recorder.stop()
@@ -893,12 +902,23 @@ final class DictationController {
 
         lastFailedSamples = nil
 
-        // Resume always returns to review with the new transcript spliced at
-        // the original caret; otherwise honor the user's review preference.
+        // Resume appends the new transcript at the end of the prior text.
+        // Normally that lands back in the review form; if the user pressed
+        // Paste during the take, deliver the combined text immediately instead.
         if let resume = resumeContext {
             resumeContext = nil
             let spliced = resume.splicing(processed)
-            enterReview(text: spliced.text, cursorLocation: spliced.caret)
+            if deliverAfterTake {
+                deliverAfterTake = false
+                LiveHUDPanel.shared.hide()
+                let combined = spliced.text
+                Task { @MainActor [weak self] in
+                    await Self.waitForModifiersClear()
+                    self?.deliver(text: combined)
+                }
+            } else {
+                enterReview(text: spliced.text, cursorLocation: spliced.caret)
+            }
         } else if reviewBeforePaste {
             enterReview(text: processed)
         } else {
@@ -968,6 +988,9 @@ final class DictationController {
         // exit window (e.g. a resume then ⌘1 in quick succession) so a stale
         // transform can never overwrite this session's transcript.
         cancelReviewAction()
+        // Returning to the form ends any take, so a pending "paste after take"
+        // can't leak into the next take.
+        deliverAfterTake = false
         state = .reviewing(text: text)
         LiveHUDPanel.shared.showReview(
             text: text,
@@ -976,6 +999,9 @@ final class DictationController {
             onPaste: { [weak self] in self?.confirmPaste() },
             onCancel: { [weak self] in self?.cancelReview() },
             onResume: { [weak self] in self?.resumeRecording() },
+            onStopTake: { [weak self] in Task { await self?.stopAndTranscribe() } },
+            onCancelTake: { [weak self] in self?.cancelRecording() },
+            onPasteTake: { [weak self] in self?.pasteFromActiveTake() },
             onRetry: bannerRetry,
             onRunAction: { [weak self] action in self?.runReviewAction(action) }
         )
@@ -1114,6 +1140,15 @@ final class DictationController {
         }
         LiveHUDPanel.shared.hide()
         state = fallbackState
+    }
+
+    /// Paste from an active re-record take: stop recording, transcribe what was
+    /// captured, append it to the prior review text, and deliver immediately
+    /// instead of returning to the form. No-op outside an active take.
+    private func pasteFromActiveTake() {
+        guard state == .recording, resumeContext != nil else { return }
+        deliverAfterTake = true
+        Task { await stopAndTranscribe() }
     }
 
     private func confirmPaste() {
