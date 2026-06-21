@@ -13,8 +13,8 @@ jobs:
   release:
     runs-on: macos-latest
     env:
-      DEVELOPMENT_TEAM: N7S7ZCZ5P7
-      SIGN_IDENTITY: "Developer ID Application: Gurgen Abagyan (N7S7ZCZ5P7)"
+      DEVELOPMENT_TEAM: 8ACEP9M78U
+      SIGN_IDENTITY: "Developer ID Application: Roman Yudin (8ACEP9M78U)"
       BUNDLE_ID: voice-to-text-ai.VoiceToText
 
     steps:

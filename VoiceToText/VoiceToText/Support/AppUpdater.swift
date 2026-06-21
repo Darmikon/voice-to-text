@@ -24,7 +24,7 @@ final class AppUpdater {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0"
     }
 
-    private static let repo = "gug007/voice-to-text"
+    private static let repo = "Darmikon/voice-to-text"
     private static let checkInterval: TimeInterval = 24 * 60 * 60  // 24h
     private static let skippedVersionKey = "updater.skippedVersion"
 
