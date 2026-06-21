@@ -15,7 +15,7 @@ pkill -9 -f "VoiceToText-Dev" 2>/dev/null || true
 sleep 1
 
 echo "→ building Debug ($DEV_BUNDLE_ID)"
-SIGN_ID="${VOICE_TO_TEXT_SIGN_ID:-Developer ID Application: Gurgen Abagyan (N7S7ZCZ5P7)}"
+SIGN_ID="${VOICE_TO_TEXT_SIGN_ID:-Developer ID Application: Roman Yudin (8ACEP9M78U)}"
 xcodebuild \
     -project VoiceToText.xcodeproj \
     -scheme VoiceToText \
@@ -27,7 +27,7 @@ xcodebuild \
     CODE_SIGN_IDENTITY="$SIGN_ID" \
     CODE_SIGNING_REQUIRED=YES \
     CODE_SIGN_STYLE=Manual \
-    DEVELOPMENT_TEAM=N7S7ZCZ5P7 \
+    DEVELOPMENT_TEAM=8ACEP9M78U \
     2>&1 | tail -3
 
 if [ ! -d "$BUILD_PRODUCT" ]; then
