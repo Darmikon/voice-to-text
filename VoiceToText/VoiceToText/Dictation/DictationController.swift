@@ -568,6 +568,7 @@ final class DictationController {
         guard recordingStartGate.accepts(startID) else { return }
         guard granted else {
             recordingStartGate.finish(startID)
+            resumeContext = nil
             state = .error("Microphone access denied. Grant it in System Settings → Privacy → Microphone.")
             return
         }
@@ -575,6 +576,7 @@ final class DictationController {
         guard let descriptor = ModelRegistry.shared.activeModel else {
             AppLog.dictation.error("startRecording: no active model")
             recordingStartGate.finish(startID)
+            resumeContext = nil
             state = .error("No active model selected.")
             return
         }
@@ -587,6 +589,7 @@ final class DictationController {
         guard let engine = preparedModel else {
             AppLog.dictation.error("startRecording: prepareModel returned nil")
             recordingStartGate.finish(startID)
+            resumeContext = nil
             state = .error(preparationErrorMessage(for: descriptor))
             return
         }
@@ -639,6 +642,7 @@ final class DictationController {
                 _ = recorder.stop()
                 cancelStreamingSession()
                 LiveHUDPanel.shared.hide()
+                resumeContext = nil
                 state = .error("Esc cancel could not be enabled. Check Accessibility or Input Monitoring in System Settings, then try again.")
                 return
             }
@@ -647,6 +651,7 @@ final class DictationController {
         } catch {
             recordingStartGate.finish(startID)
             cancelStreamingSession()
+            resumeContext = nil
             AppLog.dictation.error("Recorder start failed: \(error.localizedDescription)")
             state = .error("Could not start recording: \(error.localizedDescription)")
         }
@@ -786,7 +791,7 @@ final class DictationController {
     /// `lastFailedSamples`. Rebuilds the splice context from the *current*
     /// text and caret — the user may have edited while the banner was showing
     /// — then re-runs the pipeline on the stashed samples, so on success the
-    /// take lands at the caret exactly like a successful Resume would have.
+    /// take appends at end-of-text, matching a new Resume.
     private func retryFailedResumeTranscription() {
         guard case .reviewing = state, let samples = lastFailedSamples else { return }
         AppLog.dictation.info("Retrying failed resume transcription on \(samples.count) cached samples")
