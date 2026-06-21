@@ -342,10 +342,6 @@ final class LiveHUDPanel {
     /// Current edited review text (read at paste time).
     var currentReviewText: String { state.reviewText }
 
-    /// Current caret position inside the review editor (read at resume time
-    /// to decide where to splice the next transcription).
-    var currentCursorLocation: Int { state.selectedRange.location }
-
     private func ensureRecordingPanel() -> NSPanel {
         if let recordingPanel { return recordingPanel }
 

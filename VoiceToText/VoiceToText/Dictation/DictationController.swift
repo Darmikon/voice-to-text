@@ -496,6 +496,7 @@ final class DictationController {
                 matchesSendShortcut: matchesSendShortcut
             ) {
             case .send:
+                guard LiveHUDPanel.shared.isReviewPanelEvent(event) else { return event }
                 Task { @MainActor in self?.confirmPaste() }
                 return nil
             case .newline:
@@ -789,9 +790,9 @@ final class DictationController {
     /// Retry for a failed Resume take: the review HUD is back up showing the
     /// prior text with a failure banner, and the failed take's audio sits in
     /// `lastFailedSamples`. Rebuilds the splice context from the *current*
-    /// text and caret — the user may have edited while the banner was showing
-    /// — then re-runs the pipeline on the stashed samples, so on success the
-    /// take appends at end-of-text, matching a new Resume.
+    /// text — the user may have edited while the banner was showing — then
+    /// re-runs the pipeline on the stashed samples, so on success the take
+    /// appends at end-of-text, matching a new Resume.
     private func retryFailedResumeTranscription() {
         guard case .reviewing = state, let samples = lastFailedSamples else { return }
         AppLog.dictation.info("Retrying failed resume transcription on \(samples.count) cached samples")
@@ -964,7 +965,7 @@ final class DictationController {
         bannerRetry: (@MainActor () -> Void)? = nil
     ) {
         // Invalidate any action that slipped in during a previous session's
-        // exit window (e.g. ⌘R then ⌘1 in quick succession) so a stale
+        // exit window (e.g. a resume then ⌘1 in quick succession) so a stale
         // transform can never overwrite this session's transcript.
         cancelReviewAction()
         state = .reviewing(text: text)
