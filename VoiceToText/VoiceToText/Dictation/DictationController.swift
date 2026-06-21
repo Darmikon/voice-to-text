@@ -73,6 +73,11 @@ final class DictationController {
     private var recordingStartGate = RecordingStartGate()
     private var standaloneModifierEventCoordinator = StandaloneModifierEventCoordinator()
     private var resumeContext: ResumeContext?
+    /// Set when the user presses Paste during an in-form re-record take: the
+    /// stopped take is transcribed and appended as usual, but instead of
+    /// returning to the review form the combined text is delivered immediately.
+    /// Cleared whenever a take resolves (deliver or back to review).
+    private var deliverAfterTake = false
     /// Audio kept around after a recoverable transcription failure so the
     /// user's Retry button can re-run the pipeline on the same samples
     /// (e.g. after a network blip). Backs both the failure HUD's Retry and
@@ -274,6 +279,8 @@ final class DictationController {
             cancelRecording()
         case .cancelPendingRecording:
             cancelPendingRecording()
+        case .resumeRecording:
+            resumeRecording()
         case .none:
             break
         }
@@ -482,11 +489,25 @@ final class DictationController {
                 Task { @MainActor in self?.cancelReview() }
                 return nil
             }
-            // ⌘R resumes recording with the new transcript spliced at the caret.
-            if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-               event.charactersIgnoringModifiers?.lowercased() == "r" {
-                Task { @MainActor in self?.resumeRecording() }
+            let store = HotkeyStore.shared
+            let isReturn = event.keyCode == UInt16(kVK_Return)
+                || event.keyCode == UInt16(kVK_ANSI_KeypadEnter)
+            let hasShift = event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .shift
+            let matchesSendShortcut = HotkeyBinding.fromEvent(event) == store.sendShortcut
+            switch ReviewKeyPolicy.decision(
+                sendOnReturn: store.sendOnReturn,
+                isReturn: isReturn,
+                hasShift: hasShift,
+                matchesSendShortcut: matchesSendShortcut
+            ) {
+            case .send:
+                guard LiveHUDPanel.shared.isReviewPanelEvent(event) else { return event }
+                Task { @MainActor in self?.confirmPaste() }
                 return nil
+            case .newline:
+                return event
+            case .ignore:
+                break
             }
             // ⌘1–⌘9 run the matching review action. Matched by physical key
             // (kVK_ANSI_*) so layouts with shifted digit rows (e.g. AZERTY)
@@ -553,6 +574,7 @@ final class DictationController {
         guard recordingStartGate.accepts(startID) else { return }
         guard granted else {
             recordingStartGate.finish(startID)
+            resumeContext = nil
             state = .error("Microphone access denied. Grant it in System Settings → Privacy → Microphone.")
             return
         }
@@ -560,6 +582,7 @@ final class DictationController {
         guard let descriptor = ModelRegistry.shared.activeModel else {
             AppLog.dictation.error("startRecording: no active model")
             recordingStartGate.finish(startID)
+            resumeContext = nil
             state = .error("No active model selected.")
             return
         }
@@ -572,6 +595,7 @@ final class DictationController {
         guard let engine = preparedModel else {
             AppLog.dictation.error("startRecording: prepareModel returned nil")
             recordingStartGate.finish(startID)
+            resumeContext = nil
             state = .error(preparationErrorMessage(for: descriptor))
             return
         }
@@ -613,11 +637,22 @@ final class DictationController {
             recordingStartGate.finish(startID)
             let start = Date()
             recordStart = start
-            LiveHUDPanel.shared.show(showsLiveText: streamingEngine != nil)
+            if resumeContext != nil {
+                LiveHUDState.shared.levelHistory = Array(repeating: 0, count: LiveHUDState.levelHistoryCount)
+                LiveHUDState.shared.elapsedSeconds = 0
+                LiveHUDState.shared.reviewTakePhase = .recording
+            } else {
+                LiveHUDPanel.shared.show(showsLiveText: streamingEngine != nil)
+                let hud = LiveHUDState.shared
+                hud.willReviewAfterRecording = reviewBeforePaste
+                hud.onStopTake = { [weak self] in Task { await self?.stopAndTranscribe() } }
+                hud.onCancelTake = { [weak self] in self?.cancelRecording() }
+            }
             guard installRecordingEscMonitors() else {
                 _ = recorder.stop()
                 cancelStreamingSession()
                 LiveHUDPanel.shared.hide()
+                resumeContext = nil
                 state = .error("Esc cancel could not be enabled. Check Accessibility or Input Monitoring in System Settings, then try again.")
                 return
             }
@@ -626,6 +661,7 @@ final class DictationController {
         } catch {
             recordingStartGate.finish(startID)
             cancelStreamingSession()
+            resumeContext = nil
             AppLog.dictation.error("Recorder start failed: \(error.localizedDescription)")
             state = .error("Could not start recording: \(error.localizedDescription)")
         }
@@ -655,7 +691,11 @@ final class DictationController {
         guard state != .transcribing else { return }
         transcriptionRunID &+= 1
         state = .transcribing
-        LiveHUDPanel.shared.showTranscribing()
+        if resumeContext != nil {
+            LiveHUDState.shared.reviewTakePhase = .transcribing
+        } else {
+            LiveHUDPanel.shared.showTranscribing()
+        }
         startTranscribingElapsedTicker(from: Date())
         armTranscribingWatchdog(runID: transcriptionRunID)
     }
@@ -759,17 +799,18 @@ final class DictationController {
     /// Retry for a failed Resume take: the review HUD is back up showing the
     /// prior text with a failure banner, and the failed take's audio sits in
     /// `lastFailedSamples`. Rebuilds the splice context from the *current*
-    /// text and caret — the user may have edited while the banner was showing
-    /// — then re-runs the pipeline on the stashed samples, so on success the
-    /// take lands at the caret exactly like a successful Resume would have.
+    /// text — the user may have edited while the banner was showing — then
+    /// re-runs the pipeline on the stashed samples, so on success the take
+    /// appends at end-of-text, matching a new Resume.
     private func retryFailedResumeTranscription() {
         guard case .reviewing = state, let samples = lastFailedSamples else { return }
         AppLog.dictation.info("Retrying failed resume transcription on \(samples.count) cached samples")
         cancelReviewAction()
         lastFailedSamples = nil
+        let retryText = LiveHUDPanel.shared.currentReviewText
         resumeContext = ResumeContext(
-            fullText: LiveHUDPanel.shared.currentReviewText,
-            cursorLocation: LiveHUDPanel.shared.currentCursorLocation
+            fullText: retryText,
+            cursorLocation: (retryText as NSString).length
         )
         removeReviewEscMonitor()
         enterTranscribing()
@@ -861,12 +902,23 @@ final class DictationController {
 
         lastFailedSamples = nil
 
-        // Resume always returns to review with the new transcript spliced at
-        // the original caret; otherwise honor the user's review preference.
+        // Resume appends the new transcript at the end of the prior text.
+        // Normally that lands back in the review form; if the user pressed
+        // Paste during the take, deliver the combined text immediately instead.
         if let resume = resumeContext {
             resumeContext = nil
             let spliced = resume.splicing(processed)
-            enterReview(text: spliced.text, cursorLocation: spliced.caret)
+            if deliverAfterTake {
+                deliverAfterTake = false
+                LiveHUDPanel.shared.hide()
+                let combined = spliced.text
+                Task { @MainActor [weak self] in
+                    await Self.waitForModifiersClear()
+                    self?.deliver(text: combined)
+                }
+            } else {
+                enterReview(text: spliced.text, cursorLocation: spliced.caret)
+            }
         } else if reviewBeforePaste {
             enterReview(text: processed)
         } else {
@@ -933,9 +985,12 @@ final class DictationController {
         bannerRetry: (@MainActor () -> Void)? = nil
     ) {
         // Invalidate any action that slipped in during a previous session's
-        // exit window (e.g. ⌘R then ⌘1 in quick succession) so a stale
+        // exit window (e.g. a resume then ⌘1 in quick succession) so a stale
         // transform can never overwrite this session's transcript.
         cancelReviewAction()
+        // Returning to the form ends any take, so a pending "paste after take"
+        // can't leak into the next take.
+        deliverAfterTake = false
         state = .reviewing(text: text)
         LiveHUDPanel.shared.showReview(
             text: text,
@@ -944,6 +999,9 @@ final class DictationController {
             onPaste: { [weak self] in self?.confirmPaste() },
             onCancel: { [weak self] in self?.cancelReview() },
             onResume: { [weak self] in self?.resumeRecording() },
+            onStopTake: { [weak self] in Task { await self?.stopAndTranscribe() } },
+            onCancelTake: { [weak self] in self?.cancelRecording() },
+            onPasteTake: { [weak self] in self?.pasteFromActiveTake() },
             onRetry: bannerRetry,
             onRunAction: { [weak self] action in self?.runReviewAction(action) }
         )
@@ -1054,9 +1112,10 @@ final class DictationController {
             return
         }
 
+        let fullText = LiveHUDPanel.shared.currentReviewText
         let context = ResumeContext(
-            fullText: LiveHUDPanel.shared.currentReviewText,
-            cursorLocation: LiveHUDPanel.shared.currentCursorLocation
+            fullText: fullText,
+            cursorLocation: (fullText as NSString).length
         )
         AppLog.dictation.info("Resuming recording at cursor=\(context.cursorLocation) (prefix=\(context.prefix.count)ch, suffix=\(context.suffix.count)ch)")
         resumeContext = context
@@ -1081,6 +1140,15 @@ final class DictationController {
         }
         LiveHUDPanel.shared.hide()
         state = fallbackState
+    }
+
+    /// Paste from an active re-record take: stop recording, transcribe what was
+    /// captured, append it to the prior review text, and deliver immediately
+    /// instead of returning to the form. No-op outside an active take.
+    private func pasteFromActiveTake() {
+        guard state == .recording, resumeContext != nil else { return }
+        deliverAfterTake = true
+        Task { await stopAndTranscribe() }
     }
 
     private func confirmPaste() {

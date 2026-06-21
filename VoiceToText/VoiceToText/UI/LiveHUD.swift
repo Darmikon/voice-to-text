@@ -18,11 +18,35 @@ private final class KeyAcceptingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Hosting view that responds to the first click even while its panel is not
+/// key — the recording HUD floats over another app, so without this the HUD's
+/// Cancel/Stop/Paste buttons would swallow the first click just to gain focus.
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    required init(rootView: Content) {
+        super.init(rootView: rootView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 enum LiveHUDMode {
     case recording
     case transcribing
     case reviewing
     case failed
+}
+
+/// Sub-phase shown inside the review form when the user re-records without
+/// leaving the form. `.none` is the normal editable review.
+enum ReviewTakePhase {
+    case none
+    case recording
+    case transcribing
 }
 
 @Observable
@@ -32,6 +56,7 @@ final class LiveHUDState {
     static let levelHistoryCount = 140
 
     var mode: LiveHUDMode = .recording
+    var reviewTakePhase: ReviewTakePhase = .none
     var isRecording: Bool = false
     var elapsedSeconds: Double = 0
     /// Smoothed mic level, 0...1.
@@ -50,6 +75,11 @@ final class LiveHUDState {
     /// streaming engines like ElevenLabs). Buffered local engines leave this
     /// false so the HUD stays compact.
     var showsLiveText: Bool = false
+    /// Whether finishing the current recording will open the review form
+    /// (mirrors the "review before pasting" setting, snapshotted when the
+    /// recording HUD is shown). Drives the recording footer: Stop+timer when
+    /// true, a centred timer plus a Paste button when false.
+    var willReviewAfterRecording: Bool = false
     /// Live transcript shown while recording with a streaming engine — the
     /// committed text plus the in-progress partial. Replaced on each update.
     var partialTranscript: String = ""
@@ -87,6 +117,15 @@ final class LiveHUDState {
     @ObservationIgnored var onPaste: (@MainActor () -> Void)?
     @ObservationIgnored var onCancel: (@MainActor () -> Void)?
     @ObservationIgnored var onResume: (@MainActor () -> Void)?
+    /// Stop the in-form re-record take: transcribe what was said and append it
+    /// to the review text. Bound to the Stop button while a take is recording.
+    @ObservationIgnored var onStopTake: (@MainActor () -> Void)?
+    /// Cancel the in-form re-record take without transcribing — the prior
+    /// review text is kept. Bound to Cancel while a take is recording.
+    @ObservationIgnored var onCancelTake: (@MainActor () -> Void)?
+    /// Stop the take, append the transcript, and paste immediately. Bound to
+    /// Paste while a take is recording.
+    @ObservationIgnored var onPasteTake: (@MainActor () -> Void)?
     @ObservationIgnored var onRetry: (@MainActor () -> Void)?
     @ObservationIgnored var onRunAction: (@MainActor (DictationAction) -> Void)?
 
@@ -152,9 +191,13 @@ final class LiveHUDPanel {
         state.reviewActions = []
         state.runningActionId = nil
         state.actionRevertStack = []
+        state.reviewTakePhase = .none
         state.onPaste = nil
         state.onCancel = nil
         state.onResume = nil
+        state.onStopTake = nil
+        state.onCancelTake = nil
+        state.onPasteTake = nil
         state.onRetry = nil
         state.onRunAction = nil
 
@@ -189,6 +232,9 @@ final class LiveHUDPanel {
         onPaste: @escaping @MainActor () -> Void,
         onCancel: @escaping @MainActor () -> Void,
         onResume: @escaping @MainActor () -> Void,
+        onStopTake: (@MainActor () -> Void)? = nil,
+        onCancelTake: (@MainActor () -> Void)? = nil,
+        onPasteTake: (@MainActor () -> Void)? = nil,
         onRetry: (@MainActor () -> Void)? = nil,
         onRunAction: (@MainActor (DictationAction) -> Void)? = nil
     ) {
@@ -213,9 +259,13 @@ final class LiveHUDPanel {
         state.reviewShowsActions = ActionsStore.shared.showsInReview
         state.runningActionId = nil
         state.actionRevertStack = []
+        state.reviewTakePhase = .none
         state.onPaste = onPaste
         state.onCancel = onCancel
         state.onResume = onResume
+        state.onStopTake = onStopTake
+        state.onCancelTake = onCancelTake
+        state.onPasteTake = onPasteTake
         // Retry on the failure banner: re-runs a failed Resume take's audio.
         state.onRetry = onRetry
         state.onRunAction = onRunAction
@@ -255,10 +305,14 @@ final class LiveHUDPanel {
         state.reviewActions = []
         state.runningActionId = nil
         state.actionRevertStack = []
+        state.reviewTakePhase = .none
         state.onCancel = onCancel
         state.onRetry = onRetry
         state.onPaste = nil
         state.onResume = nil
+        state.onStopTake = nil
+        state.onCancelTake = nil
+        state.onPasteTake = nil
         state.onRunAction = nil
 
         let p = ensureReviewPanel()
@@ -301,6 +355,7 @@ final class LiveHUDPanel {
         state.level = 0
         state.reviewBanner = nil
         state.showsLiveText = false
+        state.willReviewAfterRecording = false
         state.partialTranscript = ""
         state.transcribingElapsedSeconds = 0
         state.transcribingProgress = nil
@@ -310,9 +365,13 @@ final class LiveHUDPanel {
         state.reviewActions = []
         state.runningActionId = nil
         state.actionRevertStack = []
+        state.reviewTakePhase = .none
         state.onPaste = nil
         state.onCancel = nil
         state.onResume = nil
+        state.onStopTake = nil
+        state.onCancelTake = nil
+        state.onPasteTake = nil
         state.onRetry = nil
         state.onRunAction = nil
         recordingPanel?.orderOut(nil)
@@ -328,10 +387,6 @@ final class LiveHUDPanel {
 
     /// Current edited review text (read at paste time).
     var currentReviewText: String { state.reviewText }
-
-    /// Current caret position inside the review editor (read at resume time
-    /// to decide where to splice the next transcription).
-    var currentCursorLocation: Int { state.selectedRange.location }
 
     private func ensureRecordingPanel() -> NSPanel {
         if let recordingPanel { return recordingPanel }
@@ -378,7 +433,7 @@ final class LiveHUDPanel {
     }
 
     private func attachHosting(_ p: NSPanel, rect: NSRect) {
-        let hosting = NSHostingView(rootView: LiveHUDView(state: state))
+        let hosting = FirstMouseHostingView(rootView: LiveHUDView(state: state))
         hosting.frame = rect
         hosting.autoresizingMask = [.width, .height]
         p.contentView = hosting
@@ -463,16 +518,40 @@ private struct RecordingView: View {
                 .animation(.easeOut(duration: 0.18), value: state.partialTranscript)
             }
 
-            HStack(spacing: 14) {
-                Text(timeString)
-                    .font(.system(size: 13, weight: .regular, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .monospacedDigit()
+            HStack(spacing: 8) {
+                ReviewKeyButton(
+                    title: "Cancel",
+                    hint: "esc",
+                    emphasis: .secondary
+                ) { state.onCancelTake?() }
 
-                Text(recordingHint)
-                    .font(.system(size: 12, weight: .medium))
-                    .tracking(0.1)
-                    .foregroundStyle(.white.opacity(0.42))
+                Spacer()
+
+                if state.willReviewAfterRecording {
+                    // Review form ahead: Stop finishes and opens it; the timer
+                    // rides on the Stop button.
+                    ReviewKeyButton(
+                        title: "Stop",
+                        systemImage: "stop.fill",
+                        hint: timeString,
+                        emphasis: .primary
+                    ) { state.onStopTake?() }
+                } else {
+                    // No review: the timer sits centred and the right button
+                    // pastes straight into the focused app.
+                    Text(timeString)
+                        .font(.system(size: 13, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .monospacedDigit()
+
+                    Spacer()
+
+                    ReviewKeyButton(
+                        title: "Paste",
+                        hint: HotkeyStore.shared.binding.displayKeys.joined(),
+                        emphasis: .primary
+                    ) { state.onStopTake?() }
+                }
             }
         }
     }
@@ -482,13 +561,6 @@ private struct RecordingView: View {
         let minutes = total / 60
         let seconds = total % 60
         return String(format: "%d:%02d", minutes, seconds)
-    }
-
-    private var recordingHint: String {
-        switch HotkeyStore.shared.mode {
-        case .hold: return "Release to finish · Esc cancels"
-        case .toggle: return "Press again to finish · Esc cancels"
-        }
     }
 }
 
@@ -645,43 +717,133 @@ private struct ReviewView: View {
             ReviewTextEditor(text: $state.reviewText, state: state)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
+            if state.reviewTakePhase != .none {
+                ReviewTakeStrip(state: state)
+            }
+
             if state.reviewShowsActions {
                 ReviewActionsBar(state: state)
             }
 
-            HStack(spacing: 8) {
-                ReviewKeyButton(
-                    title: "Resume",
-                    systemImage: "mic.fill",
-                    hint: "⌘R",
-                    emphasis: .secondary
-                ) { state.onResume?() }
-
-                if !state.actionRevertStack.isEmpty, state.runningActionId == nil {
-                    ReviewKeyButton(
-                        title: "Undo",
-                        systemImage: "arrow.uturn.backward",
-                        hint: nil,
-                        emphasis: .secondary
-                    ) { state.undoLastAction() }
-                    .help("Undo last action")
-                }
-
-                Spacer()
-
-                ReviewKeyButton(
-                    title: "Cancel",
-                    hint: "esc",
-                    emphasis: .secondary
-                ) { state.onCancel?() }
-
-                ReviewKeyButton(
-                    title: "Paste",
-                    hint: HotkeyStore.shared.binding.displayKeys.joined(),
-                    emphasis: .primary
-                ) { state.onPaste?() }
+            if state.reviewTakePhase == .recording {
+                takeButtonRow
+            } else {
+                reviewButtonRow
             }
         }
+    }
+
+    /// Buttons shown during normal review: Cancel (+ Undo) on the left,
+    /// Resume and Paste on the right.
+    @ViewBuilder private var reviewButtonRow: some View {
+        HStack(spacing: 8) {
+            ReviewKeyButton(
+                title: "Cancel",
+                hint: "esc",
+                emphasis: .secondary
+            ) { state.onCancel?() }
+
+            if !state.actionRevertStack.isEmpty, state.runningActionId == nil {
+                ReviewKeyButton(
+                    title: "Undo",
+                    systemImage: "arrow.uturn.backward",
+                    hint: nil,
+                    emphasis: .secondary
+                ) { state.undoLastAction() }
+                .help("Undo last action")
+            }
+
+            Spacer()
+
+            ReviewKeyButton(
+                title: "Resume",
+                systemImage: "mic.fill",
+                hint: HotkeyStore.shared.binding.displayKeys.joined(),
+                emphasis: .secondary
+            ) { state.onResume?() }
+
+            ReviewKeyButton(
+                title: "Paste",
+                hint: Self.pasteHint,
+                emphasis: .primary
+            ) { state.onPaste?() }
+        }
+    }
+
+    /// Buttons shown while a re-record take is recording: Cancel aborts the
+    /// take (no transcription), the mic turns into a Stop button with a live
+    /// timer, and Paste stops + transcribes + pastes immediately.
+    @ViewBuilder private var takeButtonRow: some View {
+        HStack(spacing: 8) {
+            ReviewKeyButton(
+                title: "Cancel",
+                hint: "esc",
+                emphasis: .secondary
+            ) { state.onCancelTake?() }
+
+            Spacer()
+
+            ReviewKeyButton(
+                title: "Stop",
+                systemImage: "stop.fill",
+                hint: takeTimeString,
+                emphasis: .secondary
+            ) { state.onStopTake?() }
+
+            ReviewKeyButton(
+                title: "Paste",
+                hint: Self.pasteHint,
+                emphasis: .primary
+            ) { state.onPasteTake?() }
+        }
+    }
+
+    /// mm:ss elapsed for the recording take, shown on the Stop button.
+    private var takeTimeString: String {
+        let total = Int(state.elapsedSeconds)
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    /// "↩" when Return sends; the configured send shortcut when Return is
+    /// remapped to newline.
+    static var pasteHint: String {
+        let store = HotkeyStore.shared
+        return store.sendOnReturn ? "↩" : store.sendShortcut.displayKeys.joined()
+    }
+}
+
+/// Compact in-form indicator shown while re-recording from the review form:
+/// just the waveform (reusing the recorded level history) while recording —
+/// the timer lives on the Stop button — and a shimmer while the new take
+/// transcribes. Sits between the editor and the buttons so the prior text
+/// stays visible.
+private struct ReviewTakeStrip: View {
+    @Bindable var state: LiveHUDState
+
+    var body: some View {
+        Group {
+            switch state.reviewTakePhase {
+            case .recording:
+                LevelBars(samples: state.levelHistory)
+                    .frame(height: 28)
+                    .frame(maxWidth: .infinity)
+            case .transcribing:
+                HStack(spacing: 9) {
+                    ShimmerText("Transcribing")
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer(minLength: 0)
+                }
+                .frame(height: 28)
+            case .none:
+                EmptyView()
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+        )
     }
 }
 

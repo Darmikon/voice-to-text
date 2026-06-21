@@ -19,6 +19,8 @@ struct HotkeyStoreHarness {
         let modeKey = "hotkey.recordingMode.v1"
         let previousBinding = defaults.data(forKey: bindingKey)
         let previousMode = defaults.string(forKey: modeKey)
+        let previousSendOnReturn = defaults.object(forKey: "review.sendOnReturn.v1")
+        let previousSendShortcut = defaults.data(forKey: "review.sendShortcut.v1")
 
         defer {
             if let previousBinding {
@@ -31,6 +33,17 @@ struct HotkeyStoreHarness {
                 defaults.set(previousMode, forKey: modeKey)
             } else {
                 defaults.removeObject(forKey: modeKey)
+            }
+
+            if let previousSendOnReturn {
+                defaults.set(previousSendOnReturn, forKey: "review.sendOnReturn.v1")
+            } else {
+                defaults.removeObject(forKey: "review.sendOnReturn.v1")
+            }
+            if let previousSendShortcut {
+                defaults.set(previousSendShortcut, forKey: "review.sendShortcut.v1")
+            } else {
+                defaults.removeObject(forKey: "review.sendShortcut.v1")
             }
         }
 
@@ -53,6 +66,28 @@ struct HotkeyStoreHarness {
             try expect(saved != nil, "binding persists to defaults")
             let decoded = try JSONDecoder().decode(HotkeyBinding.self, from: saved ?? Data())
             try expect(decoded == rightControl, "persisted binding decodes as right Control")
+
+            let sendOnReturnKey = "review.sendOnReturn.v1"
+            let sendShortcutKey = "review.sendShortcut.v1"
+            defaults.removeObject(forKey: sendOnReturnKey)
+            defaults.removeObject(forKey: sendShortcutKey)
+
+            try expect(store.sendOnReturn == true, "send-on-return defaults to true")
+            try expect(store.sendShortcut == .commandReturnBinding, "send shortcut defaults to Cmd+Return")
+
+            store.updateSendOnReturn(to: false)
+            try expect(store.sendOnReturn == false, "send-on-return updates in memory")
+            try expect(defaults.object(forKey: sendOnReturnKey) as? Bool == false, "send-on-return persists")
+
+            let custom = HotkeyBinding(keyCode: UInt32(kVK_ANSI_D), modifiers: UInt32(cmdKey), keyLabel: "D")
+            store.updateSendShortcut(to: custom)
+            let savedSend = defaults.data(forKey: sendShortcutKey)
+            try expect(savedSend != nil, "send shortcut persists to defaults")
+            let decodedSend = try JSONDecoder().decode(HotkeyBinding.self, from: savedSend ?? Data())
+            try expect(decodedSend == custom, "persisted send shortcut decodes back")
+
+            defaults.removeObject(forKey: sendOnReturnKey)
+            defaults.removeObject(forKey: sendShortcutKey)
         }
 
         print("Hotkey store harness passed")

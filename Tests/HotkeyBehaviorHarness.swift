@@ -44,13 +44,13 @@ struct HotkeyBehaviorHarness {
         )
         try expect(
             DictationHotkeyPolicy.action(mode: .toggle, state: .reviewing, event: .pressed),
-            .confirmPaste,
-            "toggle press confirms review"
+            .resumeRecording,
+            "toggle press re-records from review"
         )
         try expect(
             DictationHotkeyPolicy.action(mode: .hold, state: .reviewing, event: .pressed),
-            .confirmPaste,
-            "hold press confirms review"
+            .resumeRecording,
+            "hold press re-records from review"
         )
         try expect(
             DictationHotkeyPolicy.action(mode: .hold, state: .recording, event: .escape),

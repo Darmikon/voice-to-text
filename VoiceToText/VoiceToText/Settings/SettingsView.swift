@@ -351,6 +351,10 @@ struct HotkeyPane: View {
     @State private var monitor: Any?
     @State private var errorMessage: String?
     @State private var captureSession = HotkeyCaptureSession()
+    @State private var isCapturingSend = false
+    @State private var sendMonitor: Any?
+    @State private var sendCaptureSession = HotkeyCaptureSession()
+    @State private var sendErrorMessage: String?
 
     var body: some View {
         ScrollView {
@@ -415,6 +419,67 @@ struct HotkeyPane: View {
                     .padding(18)
                 }
 
+                RowCard {
+                    HStack(alignment: .center, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Newline on Enter")
+                                .font(.system(size: 14, weight: .medium))
+                            Text("Off: Return sends, Shift+Return adds a line. On: Return adds a line and a shortcut sends.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer()
+                        Toggle("", isOn: Binding(
+                            get: { !store.sendOnReturn },
+                            set: { store.updateSendOnReturn(to: !$0) }
+                        ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                    }
+                    .padding(18)
+                }
+
+                if !store.sendOnReturn {
+                    RowCard {
+                        HStack(alignment: .center, spacing: 16) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Send shortcut")
+                                    .font(.system(size: 14, weight: .medium))
+                                Text("Sends the reviewed text. Needs a modifier (e.g. Cmd+Return).")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if isCapturingSend {
+                                Text("Press a shortcut…")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .strokeBorder(Color.accentColor, lineWidth: 1.5)
+                                    )
+                            } else {
+                                KeyCap(keys: store.sendShortcut.displayKeys)
+                            }
+                            Button(isCapturingSend ? "Cancel" : "Change") {
+                                if isCapturingSend { stopSendCapture(cancelled: true) } else { startSendCapture() }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        .padding(18)
+                    }
+
+                    if let sendErrorMessage {
+                        Text(sendErrorMessage)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.orange)
+                    }
+                }
+
                 if let errorMessage {
                     Text(errorMessage)
                         .font(.system(size: 11))
@@ -434,7 +499,10 @@ struct HotkeyPane: View {
             }
             .padding(32)
         }
-        .onDisappear { stopRecording(cancelled: true) }
+        .onDisappear {
+            stopRecording(cancelled: true)
+            stopSendCapture(cancelled: true)
+        }
     }
 
     private var subtitle: String {
@@ -486,6 +554,37 @@ struct HotkeyPane: View {
             monitor = nil
         }
         if cancelled { errorMessage = nil }
+    }
+
+    private func startSendCapture() {
+        sendErrorMessage = nil
+        sendCaptureSession.reset()
+        isCapturingSend = true
+        sendMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+            switch sendCaptureSession.handle(event: event) {
+            case .ignored, .pendingStandaloneModifier:
+                break
+            case .cancelled:
+                stopSendCapture(cancelled: true)
+            case .captured(let candidate):
+                sendErrorMessage = nil
+                store.updateSendShortcut(to: candidate)
+                stopSendCapture(cancelled: false)
+            case .rejected:
+                sendErrorMessage = "Add at least one modifier (⌘ ⌥ ⌃ ⇧) — e.g. Cmd+Return."
+            }
+            return nil
+        }
+    }
+
+    private func stopSendCapture(cancelled: Bool) {
+        isCapturingSend = false
+        sendCaptureSession.reset()
+        if let m = sendMonitor {
+            NSEvent.removeMonitor(m)
+            sendMonitor = nil
+        }
+        if cancelled { sendErrorMessage = nil }
     }
 }
 

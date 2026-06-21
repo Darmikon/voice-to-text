@@ -20,6 +20,12 @@ struct HotkeyBinding: Codable, Equatable {
         keyLabel: "Right Control"
     )
 
+    static let commandReturnBinding = HotkeyBinding(
+        keyCode: UInt32(kVK_Return),
+        modifiers: UInt32(cmdKey),
+        keyLabel: "Return"
+    )
+
     var isStandaloneModifier: Bool {
         modifiers == 0 && keyCode == UInt32(kVK_RightControl)
     }
@@ -133,8 +139,12 @@ final class HotkeyStore {
 
     private let bindingStorageKey = "hotkey.binding.v1"
     private let modeStorageKey = "hotkey.recordingMode.v1"
+    private let sendOnReturnStorageKey = "review.sendOnReturn.v1"
+    private let sendShortcutStorageKey = "review.sendShortcut.v1"
     private(set) var binding: HotkeyBinding = .defaultBinding
     private(set) var mode: RecordingShortcutMode = .toggle
+    private(set) var sendOnReturn: Bool = true
+    private(set) var sendShortcut: HotkeyBinding = .commandReturnBinding
     @ObservationIgnored var onChange: (() -> Void)?
 
     private init() { load() }
@@ -152,6 +162,20 @@ final class HotkeyStore {
         saveMode()
     }
 
+    func updateSendOnReturn(to new: Bool) {
+        guard new != sendOnReturn else { return }
+        sendOnReturn = new
+        UserDefaults.standard.set(new, forKey: sendOnReturnStorageKey)
+    }
+
+    func updateSendShortcut(to new: HotkeyBinding) {
+        guard new != sendShortcut else { return }
+        sendShortcut = new
+        if let data = try? JSONEncoder().encode(new) {
+            UserDefaults.standard.set(data, forKey: sendShortcutStorageKey)
+        }
+    }
+
     func resetToDefault() {
         update(to: .defaultBinding)
     }
@@ -165,6 +189,15 @@ final class HotkeyStore {
         if let rawMode = UserDefaults.standard.string(forKey: modeStorageKey),
            let decodedMode = RecordingShortcutMode(rawValue: rawMode) {
             mode = decodedMode
+        }
+
+        if UserDefaults.standard.object(forKey: sendOnReturnStorageKey) != nil {
+            sendOnReturn = UserDefaults.standard.bool(forKey: sendOnReturnStorageKey)
+        }
+
+        if let data = UserDefaults.standard.data(forKey: sendShortcutStorageKey),
+           let decoded = try? JSONDecoder().decode(HotkeyBinding.self, from: data) {
+            sendShortcut = decoded
         }
     }
 
