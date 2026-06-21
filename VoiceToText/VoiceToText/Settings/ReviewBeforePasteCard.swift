@@ -26,7 +26,8 @@ struct ReviewBeforePasteCard: View {
                 }
 
                 ReviewHUDPreview(
-                    pasteHint: hotkeyStore.binding.displayKeys.joined(),
+                    resumeHint: hotkeyStore.binding.displayKeys.joined(),
+                    pasteHint: hotkeyStore.sendOnReturn ? "↩" : hotkeyStore.sendShortcut.displayKeys.joined(),
                     isEnabled: reviewBeforePaste
                 )
             }
@@ -39,6 +40,7 @@ struct ReviewBeforePasteCard: View {
 /// same sample text. Dims when the feature is off so the user can still see
 /// what they'd be turning on.
 private struct ReviewHUDPreview: View {
+    let resumeHint: String
     let pasteHint: String
     let isEnabled: Bool
 
@@ -53,9 +55,9 @@ private struct ReviewHUDPreview: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 14) {
-                ReviewKeyChip(label: "Resume", systemImage: "mic.fill", hint: "⌘R", emphasis: .ghost)
-                Spacer()
                 ReviewKeyChip(label: "Cancel", hint: "esc", emphasis: .ghost)
+                Spacer()
+                ReviewKeyChip(label: "Resume", systemImage: "mic.fill", hint: resumeHint, emphasis: .ghost)
                 ReviewKeyChip(label: "Paste", hint: pasteHint, emphasis: .primary)
             }
         }
