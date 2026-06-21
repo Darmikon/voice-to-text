@@ -37,6 +37,7 @@ enum DictationHotkeyAction: Equatable {
     case startRecording
     case stopAndTranscribe
     case confirmPaste
+    case resumeRecording
     case cancelRecording
     case cancelPendingRecording
 }
@@ -79,7 +80,7 @@ enum DictationHotkeyPolicy {
         case (.recording, .released):
             return .stopAndTranscribe
         case (.reviewing, .pressed):
-            return .confirmPaste
+            return .resumeRecording
         default:
             return .none
         }
@@ -97,7 +98,7 @@ enum DictationHotkeyPolicy {
         case .recording:
             return .stopAndTranscribe
         case .reviewing:
-            return .confirmPaste
+            return .resumeRecording
         case .preparing, .transcribing:
             return .none
         }
