@@ -484,11 +484,24 @@ final class DictationController {
                 Task { @MainActor in self?.cancelReview() }
                 return nil
             }
-            // ⌘R resumes recording with the new transcript spliced at the caret.
-            if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-               event.charactersIgnoringModifiers?.lowercased() == "r" {
-                Task { @MainActor in self?.resumeRecording() }
+            let store = HotkeyStore.shared
+            let isReturn = event.keyCode == UInt16(kVK_Return)
+                || event.keyCode == UInt16(kVK_ANSI_KeypadEnter)
+            let hasShift = event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .shift
+            let matchesSendShortcut = HotkeyBinding.fromEvent(event) == store.sendShortcut
+            switch ReviewKeyPolicy.decision(
+                sendOnReturn: store.sendOnReturn,
+                isReturn: isReturn,
+                hasShift: hasShift,
+                matchesSendShortcut: matchesSendShortcut
+            ) {
+            case .send:
+                Task { @MainActor in self?.confirmPaste() }
                 return nil
+            case .newline:
+                return event
+            case .ignore:
+                break
             }
             // ⌘1–⌘9 run the matching review action. Matched by physical key
             // (kVK_ANSI_*) so layouts with shifted digit rows (e.g. AZERTY)
@@ -615,7 +628,13 @@ final class DictationController {
             recordingStartGate.finish(startID)
             let start = Date()
             recordStart = start
-            LiveHUDPanel.shared.show(showsLiveText: streamingEngine != nil)
+            if resumeContext != nil {
+                LiveHUDState.shared.levelHistory = Array(repeating: 0, count: LiveHUDState.levelHistoryCount)
+                LiveHUDState.shared.elapsedSeconds = 0
+                LiveHUDState.shared.reviewTakePhase = .recording
+            } else {
+                LiveHUDPanel.shared.show(showsLiveText: streamingEngine != nil)
+            }
             guard installRecordingEscMonitors() else {
                 _ = recorder.stop()
                 cancelStreamingSession()
@@ -657,7 +676,11 @@ final class DictationController {
         guard state != .transcribing else { return }
         transcriptionRunID &+= 1
         state = .transcribing
-        LiveHUDPanel.shared.showTranscribing()
+        if resumeContext != nil {
+            LiveHUDState.shared.reviewTakePhase = .transcribing
+        } else {
+            LiveHUDPanel.shared.showTranscribing()
+        }
         startTranscribingElapsedTicker(from: Date())
         armTranscribingWatchdog(runID: transcriptionRunID)
     }
@@ -769,9 +792,10 @@ final class DictationController {
         AppLog.dictation.info("Retrying failed resume transcription on \(samples.count) cached samples")
         cancelReviewAction()
         lastFailedSamples = nil
+        let retryText = LiveHUDPanel.shared.currentReviewText
         resumeContext = ResumeContext(
-            fullText: LiveHUDPanel.shared.currentReviewText,
-            cursorLocation: LiveHUDPanel.shared.currentCursorLocation
+            fullText: retryText,
+            cursorLocation: (retryText as NSString).length
         )
         removeReviewEscMonitor()
         enterTranscribing()
@@ -1056,9 +1080,10 @@ final class DictationController {
             return
         }
 
+        let fullText = LiveHUDPanel.shared.currentReviewText
         let context = ResumeContext(
-            fullText: LiveHUDPanel.shared.currentReviewText,
-            cursorLocation: LiveHUDPanel.shared.currentCursorLocation
+            fullText: fullText,
+            cursorLocation: (fullText as NSString).length
         )
         AppLog.dictation.info("Resuming recording at cursor=\(context.cursorLocation) (prefix=\(context.prefix.count)ch, suffix=\(context.suffix.count)ch)")
         resumeContext = context
