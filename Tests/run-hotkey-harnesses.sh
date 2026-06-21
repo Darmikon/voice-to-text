@@ -73,3 +73,9 @@ swiftc -parse-as-library \
   Tests/ActionRunnerHarness.swift \
   -o "$TMPDIR/action-runner-harness"
 "$TMPDIR/action-runner-harness"
+
+swiftc -parse-as-library \
+  VoiceToText/VoiceToText/Hotkey/ReviewKeyPolicy.swift \
+  Tests/ReviewKeyPolicyHarness.swift \
+  -o "$TMPDIR/review-key-policy-harness"
+"$TMPDIR/review-key-policy-harness"
